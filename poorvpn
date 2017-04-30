@@ -1,0 +1,99 @@
+#!/bin/sh
+##############################################
+# The poorest VPN program
+#                                      Inemajo
+##############################################
+
+usage()
+{
+    printf "USAGE: $0 [OPTIONS] start SERVER_IP
+OPTIONS:
+  -p Port to use for vpn (default $VPN_PORT)
+  -P ssh port to use (default 22)
+  -t tun interface name (default vpn0)
+  -s start vpn over the ssh connection (with socat)
+  -S start vpn over the ssh connection (with pppd)
+
+EXAMPLES:
+  $0 -P 22 -t vpn0 -s start root@192.168.1.1
+  $0 -p 1337 -P 22 -t vpn0 start root@192.168.1.1
+  $0 -P 22 -t vpn0 -S start root@192.168.1.1
+"
+    exit 0
+}
+
+generate_cert()
+{
+    FILENAME=$1
+
+    echo "Generate certificates for $FILENAME"
+    openssl genrsa -out $FILENAME.key 2048
+    openssl req -new -key $FILENAME.key -x509 -days 1337 -subj '/CN=www.poorvpn.org/O=Poor VPN Org./C=FR' -out $FILENAME.crt
+    cat $FILENAME.crt $FILENAME.key > $FILENAME.pem
+}
+
+start_client_over_ssl()
+{
+	TEMP=$(mktemp -d)
+	NAME=go.sh
+	cp $0 $TEMP/$NAME
+	cd $TEMP
+
+	generate_cert client
+	generate_cert server
+	ssh -MfN -S ./ctrl-sock -p $SSH_PORT $SERVER_IP
+	ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP "mkdir -p ${TEMP}"
+	scp -o ControlPath=./ctrl-sock -P $SSH_PORT ${NAME} client.crt server.pem $SERVER_IP:"${TEMP}"
+	(ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP "cd ${TEMP} ; ./${NAME} -t ${TUN_NAME} start_server ${VPN_PORT}") &
+	socat -d -d openssl-connect:${SERVER_IP}:11443,cert=client.pem,cafile=server.crt,method=DTLS1,compress=auto,commonname="www.poorvpn.org",cipher=HIGH,retry=10 TUN:192.168.255.2/30,up,tun-name="${TUN_NAME}",su="nobody"
+	ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP "rm -r $TEMP"
+	ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP -O exit
+	cd - > /dev/null
+	echo "Delete temp dir $TEMP ..."
+	rm -r $TEMP
+}
+
+start_server_over_ssl()
+{
+    socat -d -d 'openssl-listen:11443,reuseaddr,cert=server.pem,cafile=client.crt,compress=auto,method=DTLS1,cipher=HIGH' "TUN:192.168.255.1/30,tun-name=${TUN_NAME},tun-type=tun,su=nobody,iff-up"
+}
+
+start_client_over_ssh()
+{
+    if [ "$OVER_SSH" = "socat" ]; then
+	socat -d -d "TUN:192.168.255.2/30,tun-name=${TUN_NAME},tun-type=tun,iff-up" SYSTEM:"ssh -Cp $SSH_PORT $SERVER_IP 'socat -d -d - TUN:192.168.255.1/30,tun-name=${TUN_NAME},tun-type=tun,su=nobody,iff-up'"
+    else
+	pppd nodetach noauth silent nodeflate nobsdcomp ifname "${TUN_NAME}" pty "ssh -Cp $SSH_PORT $SERVER_IP pppd nodetach notty noauth ifname ${TUN_NAME}" nobsdcomp ipparam vpn 192.168.255.2:192.168.255.1
+    fi
+}
+
+SSH_PORT="22"
+VPN_PORT="11443"
+TUN_NAME="vpn0"
+OVER_SSH="n"
+while getopts "sShp:P:a:t:" option
+do
+    case $option in
+        p) VPN_PORT=$OPTARG ;;
+        P) SSH_PORT=$OPTARG ;;
+	t) TUN_NAME=$OPTARG ;;
+	s) OVER_SSH="socat" ;;
+	S) OVER_SSH="pppd" ;;
+	\?|h) usage ;;
+    esac
+done
+shift $((OPTIND-1))
+
+case "$1" in
+    "start")
+	[ -n "$2" ] && SERVER_IP="$2" || usage "No server IP in ARG"
+	[ "$OVER_SSH" = "n" ] && start_client_over_ssl || start_client_over_ssh
+	;;
+
+    "start_server")
+	start_server_over_ssl
+	;;
+
+    *)
+	usage
+esac
