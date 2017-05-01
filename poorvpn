@@ -45,7 +45,7 @@ start_client_over_ssl()
 	ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP "mkdir -p ${TEMP}"
 	scp -o ControlPath=./ctrl-sock -P $SSH_PORT ${NAME} client.crt server.pem $SERVER_IP:"${TEMP}"
 	(ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP "cd ${TEMP} ; ./${NAME} -t ${TUN_NAME} start_server ${VPN_PORT}") &
-	socat -d -d openssl-connect:${SERVER_IP}:11443,cert=client.pem,cafile=server.crt,method=DTLS1,compress=auto,commonname="www.poorvpn.org",cipher=HIGH,retry=10 TUN:192.168.255.2/30,up,tun-name="${TUN_NAME}",su="nobody"
+	socat -d -d openssl-connect:$(echo ${SERVER_IP} | sed 's/.*@\(.*\)/\1/g'):11443,cert=client.pem,cafile=server.crt,method=DTLS1,compress=auto,commonname="www.poorvpn.org",cipher=HIGH,retry=10 TUN:192.168.255.2/30,up,tun-name="${TUN_NAME}",su="nobody"
 	ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP "rm -r $TEMP"
 	ssh -S ./ctrl-sock -p $SSH_PORT $SERVER_IP -O exit
 	cd - > /dev/null
